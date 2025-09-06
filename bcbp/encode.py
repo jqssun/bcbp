@@ -12,10 +12,9 @@ class FieldSize:
 
 
 class SectionBuilder:
-    def __init__(self, root: bool = False):
+    def __init__(self):
         self.output = []
         self.field_sizes = []
-        self.root = root
 
     def add_field(
         self,
@@ -61,13 +60,10 @@ class SectionBuilder:
         for field_size in reversed(section.field_sizes):
             if not found_last_value and field_size.is_defined:
                 found_last_value = True
-
             if found_last_value:
                 section_length += field_size.size
 
-        self.add_field(number_to_hex(section_length), 2) if (
-            section_length > 0 or self.root
-        ) else None
+        self.add_field(number_to_hex(section_length), 2)
         self.add_field(section_string, section_length)
 
     def to_string(self) -> str:
@@ -87,28 +83,14 @@ def encode(bcbp: BarcodedBoardingPass) -> str:
     )
     bcbp.meta.electronic_ticket_indicator = bcbp.meta.electronic_ticket_indicator or "E"
     bcbp.meta.beginning_of_version_number = bcbp.meta.beginning_of_version_number or ">"
-    bcbp.meta.version_number = bcbp.meta.version_number or (
-        6
-        if (
-            bcbp.data.passenger_description
-            or bcbp.data.source_of_check_in
-            or bcbp.data.source_of_boarding_pass_issuance
-            or bcbp.data.date_of_issue_of_boarding_pass
-            or bcbp.data.document_type
-            or bcbp.data.airline_designator_of_boarding_pass_issuer
-            or bcbp.data.baggage_tag_licence_plate_number
-            or bcbp.data.first_non_consecutive_baggage_tag_licence_plate_number
-            or bcbp.data.second_non_consecutive_baggage_tag_licence_plate_number
-        )
-        else None
-    )
+    bcbp.meta.version_number = bcbp.meta.version_number or 6
     bcbp.meta.beginning_of_security_data = bcbp.meta.beginning_of_security_data or "^"
 
-    barcode_data = SectionBuilder(root=True)
+    barcode_data = SectionBuilder()
     if not bcbp.data or not bcbp.data.legs or len(bcbp.data.legs) == 0:
         return ""
 
-    # root mandatory fields
+    # mandatory fields
     barcode_data.add_field(bcbp.meta.format_code, LENGTHS.FORMAT_CODE)
     barcode_data.add_field(
         bcbp.meta.number_of_legs_encoded, LENGTHS.NUMBER_OF_LEGS_ENCODED
@@ -118,7 +100,9 @@ def encode(bcbp: BarcodedBoardingPass) -> str:
         bcbp.meta.electronic_ticket_indicator, LENGTHS.ELECTRONIC_TICKET_INDICATOR
     )
 
+    mandatory_only = bcbp.meta.version_number != 6
     added_unique_fields = False
+
     for leg in bcbp.data.legs:
         # mandatory leg fields
         barcode_data.add_field(
@@ -145,11 +129,10 @@ def encode(bcbp: BarcodedBoardingPass) -> str:
         )
         barcode_data.add_field(leg.passenger_status, LENGTHS.PASSENGER_STATUS)
 
-        # conditional section
         conditional_section = SectionBuilder()
 
         # add unique fields only once (for first leg)
-        if not added_unique_fields and bcbp.meta.version_number is not None:
+        if not added_unique_fields:
             conditional_section.add_field(
                 bcbp.meta.beginning_of_version_number,
                 LENGTHS.BEGINNING_OF_VERSION_NUMBER,
@@ -192,7 +175,6 @@ def encode(bcbp: BarcodedBoardingPass) -> str:
                 bcbp.data.second_non_consecutive_baggage_tag_licence_plate_number,
                 LENGTHS.SECOND_NON_CONSECUTIVE_BAGGAGE_TAG_LICENCE_PLATE_NUMBER,
             )
-
             conditional_section.add_section(section_a)
             added_unique_fields = True
 
@@ -218,10 +200,9 @@ def encode(bcbp: BarcodedBoardingPass) -> str:
         section_b.add_field(leg.id_ad_indicator, LENGTHS.ID_AD_INDICATOR)
         section_b.add_field(leg.free_baggage_allowance, LENGTHS.FREE_BAGGAGE_ALLOWANCE)
         section_b.add_field(leg.fast_track, LENGTHS.FAST_TRACK)
-
         conditional_section.add_section(section_b)
         conditional_section.add_field(leg.for_individual_airline_use)
-        barcode_data.add_section(conditional_section)
+        barcode_data.add_section(conditional_section) if not mandatory_only else barcode_data.add_field("00")
 
     # security data section
     if bcbp.data.security_data is not None:
