@@ -12,9 +12,10 @@ class FieldSize:
 
 
 class SectionBuilder:
-    def __init__(self):
+    def __init__(self, root: bool = False):
         self.output = []
         self.field_sizes = []
+        self.root = root
 
     def add_field(
         self,
@@ -35,9 +36,7 @@ class SectionBuilder:
             value = date_to_day_of_year(field, add_year_prefix)
         else:
             value = str(field)
-
         value_length = len(value)
-
         if length is not None:
             if value_length > length:
                 value = value[:length]
@@ -45,7 +44,6 @@ class SectionBuilder:
                 value = value + " " * (length - value_length)
 
         self.output.append(value)
-
         self.field_sizes.append(
             FieldSize(
                 size=length if length is not None else len(value),
@@ -56,7 +54,6 @@ class SectionBuilder:
     def add_section(self, section: "SectionBuilder"):
         """Add another section to this section with length prefix."""
         section_string = section.to_string()
-
         found_last_value = False
         section_length = 0
 
@@ -68,7 +65,9 @@ class SectionBuilder:
             if found_last_value:
                 section_length += field_size.size
 
-        self.add_field(number_to_hex(section_length), 2)
+        self.add_field(number_to_hex(section_length), 2) if (
+            section_length > 0 or self.root
+        ) else None
         self.add_field(section_string, section_length)
 
     def to_string(self) -> str:
@@ -88,15 +87,28 @@ def encode(bcbp: BarcodedBoardingPass) -> str:
     )
     bcbp.meta.electronic_ticket_indicator = bcbp.meta.electronic_ticket_indicator or "E"
     bcbp.meta.beginning_of_version_number = bcbp.meta.beginning_of_version_number or ">"
-    bcbp.meta.version_number = bcbp.meta.version_number or 6
+    bcbp.meta.version_number = bcbp.meta.version_number or (
+        6
+        if (
+            bcbp.data.passenger_description
+            or bcbp.data.source_of_check_in
+            or bcbp.data.source_of_boarding_pass_issuance
+            or bcbp.data.date_of_issue_of_boarding_pass
+            or bcbp.data.document_type
+            or bcbp.data.airline_designator_of_boarding_pass_issuer
+            or bcbp.data.baggage_tag_licence_plate_number
+            or bcbp.data.first_non_consecutive_baggage_tag_licence_plate_number
+            or bcbp.data.second_non_consecutive_baggage_tag_licence_plate_number
+        )
+        else None
+    )
     bcbp.meta.beginning_of_security_data = bcbp.meta.beginning_of_security_data or "^"
 
-    barcode_data = SectionBuilder()
-
+    barcode_data = SectionBuilder(root=True)
     if not bcbp.data or not bcbp.data.legs or len(bcbp.data.legs) == 0:
         return ""
 
-    # main mandatory fields
+    # root mandatory fields
     barcode_data.add_field(bcbp.meta.format_code, LENGTHS.FORMAT_CODE)
     barcode_data.add_field(
         bcbp.meta.number_of_legs_encoded, LENGTHS.NUMBER_OF_LEGS_ENCODED
@@ -107,7 +119,6 @@ def encode(bcbp: BarcodedBoardingPass) -> str:
     )
 
     added_unique_fields = False
-
     for leg in bcbp.data.legs:
         # mandatory leg fields
         barcode_data.add_field(
@@ -120,12 +131,17 @@ def encode(bcbp: BarcodedBoardingPass) -> str:
         barcode_data.add_field(
             leg.operating_carrier_designator, LENGTHS.OPERATING_CARRIER_DESIGNATOR
         )
-        barcode_data.add_field(leg.flight_number, LENGTHS.FLIGHT_NUMBER)
+        barcode_data.add_field(
+            leg.flight_number.zfill(LENGTHS.FLIGHT_NUMBER - 1), LENGTHS.FLIGHT_NUMBER
+        )
         barcode_data.add_field(leg.date_of_flight, LENGTHS.DATE_OF_FLIGHT)
         barcode_data.add_field(leg.compartment_code, LENGTHS.COMPARTMENT_CODE)
-        barcode_data.add_field(leg.seat_number, LENGTHS.SEAT_NUMBER)
         barcode_data.add_field(
-            leg.check_in_sequence_number, LENGTHS.CHECK_IN_SEQUENCE_NUMBER
+            leg.seat_number.zfill(LENGTHS.SEAT_NUMBER), LENGTHS.SEAT_NUMBER
+        )
+        barcode_data.add_field(
+            leg.check_in_sequence_number.zfill(LENGTHS.CHECK_IN_SEQUENCE_NUMBER - 1),
+            LENGTHS.CHECK_IN_SEQUENCE_NUMBER,
         )
         barcode_data.add_field(leg.passenger_status, LENGTHS.PASSENGER_STATUS)
 
@@ -133,7 +149,7 @@ def encode(bcbp: BarcodedBoardingPass) -> str:
         conditional_section = SectionBuilder()
 
         # add unique fields only once (for first leg)
-        if not added_unique_fields:
+        if not added_unique_fields and bcbp.meta.version_number is not None:
             conditional_section.add_field(
                 bcbp.meta.beginning_of_version_number,
                 LENGTHS.BEGINNING_OF_VERSION_NUMBER,
